@@ -1,0 +1,435 @@
+# 📝 PR Prep Agent
+
+## Overview
+
+The PR Prep Agent acts as a technical writer who automatically prepares pull requests with comprehensive descriptions, appropriate labels, and helpful context for reviewers.
+
+## What It Does
+
+The PR Prep Agent:
+
+- **Generates PR Descriptions**: Creates clear, structured descriptions from commits and diffs
+- **Adds Labels**: Automatically tags PRs by size, area, and content type
+- **Links Issues**: Finds and references related issues
+- **Suggests Reviewers**: Identifies appropriate reviewers based on file ownership
+- **Estimates Review Time**: Calculates expected time to review
+- **Provides Testing Guidance**: Lists what testing was performed
+- **Highlights Key Areas**: Points reviewers to critical changes
+
+## How It Works
+
+### Trigger Events
+
+The PR Prep Agent runs when:
+- **PR Opened** - First-time PR creation
+- **Draft PR Converted to Ready** - When draft becomes ready for review
+
+**Note**: Only runs if PR has no description or a minimal description (<50 characters)
+
+### Workflow Process
+
+1. **Checkout Code**: Gets PR branch with full diff
+2. **Gather Context**: Collects statistics and categorizes changes
+3. **Analyze Commits**: Reviews commit messages for patterns
+4. **Find Related Issues**: Searches branch name and commits for issue references
+5. **Identify Reviewers**: Finds contributors to changed files
+6. **Load Knowledge**: Gets codebase context from Librarian
+7. **Generate Description**: Uses AI to create comprehensive PR description
+8. **Add Labels**: Applies automated labels based on PR characteristics
+9. **Update PR**: Sets description and labels
+
+### Analysis Performed
+
+**Change Statistics**:
+- Total files changed
+- Lines added/removed
+- Components modified
+- API changes
+- Tests included
+- Documentation updates
+
+**Categorization**:
+- Frontend vs Backend changes
+- New features vs bug fixes
+- Breaking changes
+- Documentation updates
+
+**Context Gathering**:
+- Recent commits on changed files
+- Related issues/PRs
+- Suggested reviewers
+- Estimated review time
+
+## Configuration Options
+
+### In `.github/agents/config.yml`
+
+```yaml
+agents:
+  pr-prep:
+    enabled: true
+    
+    # Auto-label based on file paths
+    path_labels:
+      "src/components/**": "frontend"
+      "src/api/**": "backend"
+      "*.test.*": "tests"
+      "*.md": "documentation"
+      "src/auth/**": "security"
+      "package.json": "dependencies"
+    
+    # Size thresholds for labels (lines changed)
+    size_labels:
+      small: 50        # < 50 lines
+      medium: 200      # 50-200 lines
+      large: 500       # 200-500 lines
+      # > 500 = "size/xl"
+    
+    # Reviewer suggestion
+    reviewer:
+      enabled: true
+      max_suggestions: 3
+      exclude_author: true
+```
+
+### Workflow Configuration
+
+Located at `.github/workflows/agent-pr-prep.yml`
+
+Key settings:
+- Conditional: Only runs if PR body is empty or <50 chars
+- Uses git history to find reviewers
+- Applies labels via GitHub API
+- Updates PR description
+
+## PR Description Format
+
+The agent generates descriptions following this structure:
+
+```markdown
+## Summary
+
+This PR implements user authentication using JWT tokens. It adds login and signup endpoints to the API, along with middleware to protect authenticated routes. The implementation follows the authentication pattern established in the codebase-map.
+
+## Changes
+
+- **Authentication**: New JWT-based auth system
+  - Login endpoint at `/api/auth/login`
+  - Signup endpoint at `/api/auth/signup`
+  - Password hashing with bcrypt
+  
+- **Middleware**: Auth middleware for protected routes
+  - Token verification
+  - User session management
+  - Error handling for expired tokens
+  
+- **Database**: User model and migrations
+  - User schema with email and password
+  - Migration to create users table
+  
+- **Tests**: Comprehensive test coverage
+  - Auth endpoint tests
+  - Middleware tests
+  - Integration tests for protected routes
+
+## Review Guide
+
+**Estimated review time**: 25 minutes
+
+**Key areas to review**:
+1. `src/api/auth.ts` - Check JWT token generation and validation
+2. `src/middleware/authenticate.ts` - Verify middleware logic
+3. `src/models/user.ts` - Review password hashing implementation
+4. `tests/auth.test.ts` - Ensure test coverage is adequate
+
+**Testing performed**:
+- [x] Unit tests pass (42 new tests)
+- [x] Integration tests with protected routes
+- [x] Manual testing of login/signup flow
+- [x] Security review of password handling
+- [x] Performance testing with token validation
+
+## Related
+
+- Fixes #123 - Add user authentication
+- Related to #45 - User management system
+- Implements requirements from #89
+
+## Breaking Changes
+
+⚠️ **None** - This is a new feature with no breaking changes to existing APIs
+
+## Screenshots
+
+N/A - Backend API changes only
+
+## Deployment Notes
+
+**Required before deployment**:
+- Set `JWT_SECRET` environment variable
+- Run database migrations
+- Update API documentation
+
+---
+
+*Generated by PR Prep Agent • Review time estimate based on 1 min per 20 lines*
+```
+
+## Label System
+
+### Automatic Labels Applied
+
+**Size Labels** (based on lines changed):
+- `size/small` - < 50 lines
+- `size/medium` - 50-200 lines
+- `size/large` - 200-500 lines
+- `size/xl` - > 500 lines
+
+**Area Labels** (based on files changed):
+- `area/frontend` - Changes to UI components
+- `area/backend` - Changes to API/server code
+- `area/database` - Database schema or migrations
+- `area/infrastructure` - CI/CD, Docker, deployment configs
+
+**Content Labels**:
+- `includes/tests` - PR includes test files
+- `includes/docs` - PR includes documentation
+- `dependencies` - Changes to package.json/requirements.txt
+
+**Type Labels**:
+- `feature` - New functionality
+- `bugfix` - Bug fixes
+- `refactor` - Code refactoring
+- `chore` - Maintenance tasks
+
+### Custom Label Configuration
+
+Add custom label rules:
+
+```yaml
+path_labels:
+  "src/payments/**": "critical-path"
+  "*.config.*": "configuration"
+  "scripts/**": "automation"
+  ".github/**": "meta"
+```
+
+## Reviewer Suggestion Algorithm
+
+The agent suggests reviewers based on:
+
+1. **File Ownership**: Contributors to changed files (last 6 months)
+2. **Frequency**: Number of commits to those files
+3. **Recency**: Recent activity in the area
+4. **Exclusions**: Removes PR author from suggestions
+5. **Limit**: Maximum 3 suggestions
+
+### Reviewer Selection
+
+```bash
+# For each changed file:
+# 1. Get recent contributors
+git log --since="6 months ago" --format='%an' -- file.ts | \
+  sort | uniq -c | sort -rn | head -3
+
+# 2. Exclude PR author
+# 3. Aggregate across all files
+# 4. Return top 3 most frequent contributors
+```
+
+## Best Practices
+
+### For Repository Maintainers
+
+1. **Define Label Taxonomy**: Create consistent label system
+2. **Customize Path Labels**: Map paths to your project structure
+3. **Review Generated Descriptions**: Ensure quality is consistent
+4. **Update Exclusions**: Add authors who shouldn't be auto-suggested
+5. **Monitor Description Quality**: Adjust prompt if needed
+
+### For Pull Request Authors
+
+1. **Provide Context**: Add any business context agent can't infer
+2. **Add Screenshots**: For UI changes, add visuals manually
+3. **Document Breaking Changes**: Highlight any breaking changes
+4. **Review Before Submitting**: Check generated description for accuracy
+5. **Edit if Needed**: Agent description is a starting point
+
+## Customization
+
+### Adjusting Description Style
+
+Edit `.github/agents/prompts/pr-prep.md` to:
+- Change tone (formal vs casual)
+- Add project-specific sections
+- Emphasize particular aspects
+- Include additional checklists
+
+### Custom Analysis
+
+Add custom PR analysis:
+
+```yaml
+- name: Detect breaking changes
+  run: |
+    # Custom script to detect breaking changes
+    if git diff origin/main | grep -q "BREAKING"; then
+      echo "has_breaking=true" >> $GITHUB_OUTPUT
+    fi
+    
+- name: Include in description
+  with:
+    additional_context: |
+      Breaking changes: ${{ steps.breaking.outputs.has_breaking }}
+```
+
+### Integration with Other Tools
+
+Link to external resources:
+
+```yaml
+- name: Get Jira ticket
+  run: |
+    TICKET=$(echo "${{ github.head_ref }}" | grep -oE '[A-Z]+-[0-9]+')
+    echo "jira_ticket=$TICKET" >> $GITHUB_OUTPUT
+    
+- name: Add to description
+  with:
+    additional_context: |
+      Jira: https://jira.company.com/browse/${{ steps.jira.outputs.jira_ticket }}
+```
+
+## Troubleshooting
+
+### Agent Not Running
+
+**Symptoms**: PR opened but no description added
+
+**Solutions**:
+- Check if PR already has description >50 chars
+- Verify workflow permissions (`pull-requests: write`)
+- Check Actions tab for workflow errors
+- Ensure triggers match PR events
+
+### Poor Quality Descriptions
+
+**Symptoms**: Generated descriptions are vague or inaccurate
+
+**Solutions**:
+- Ensure commit messages are descriptive
+- Update Librarian knowledge for better context
+- Improve prompt with examples
+- Add more context files to analysis
+
+### Wrong Labels Applied
+
+**Symptoms**: Incorrect labels on PR
+
+**Solutions**:
+- Review `path_labels` configuration
+- Adjust size thresholds
+- Check label names match repository labels
+- Verify label application logic
+
+### Missing Related Issues
+
+**Symptoms**: Agent doesn't link relevant issues
+
+**Solutions**:
+- Include issue numbers in branch name
+- Reference issues in commit messages
+- Use standard formats (#123, GH-123)
+- Add issue links manually if needed
+
+## Advanced Features
+
+### Template Sections
+
+Include custom template sections:
+
+```yaml
+- name: Add custom sections
+  run: |
+    cat >> description.md << 'EOF'
+    
+    ## Performance Impact
+    [Analyze performance implications]
+    
+    ## Security Considerations
+    [Any security concerns to review]
+    EOF
+```
+
+### Change Impact Analysis
+
+Analyze change scope:
+
+```yaml
+- name: Analyze impact
+  run: |
+    # Check if changes affect API contracts
+    if git diff origin/main | grep -q "export.*function"; then
+      echo "api_changes=true" >> $GITHUB_OUTPUT
+    fi
+```
+
+### Multi-Repository Context
+
+For monorepo setups:
+
+```yaml
+- name: Determine affected packages
+  run: |
+    PACKAGES=$(git diff --name-only origin/main | \
+      grep "packages/" | cut -d/ -f2 | sort -u)
+    echo "affected_packages=$PACKAGES" >> $GITHUB_OUTPUT
+```
+
+## Performance Considerations
+
+- **Processing Time**: 30-60 seconds per PR
+- **API Usage**: ~1000 tokens per description
+- **Git Operations**: Requires full diff and log access
+- **Scalability**: Handles PRs up to 1000 files
+
+## Integration with Review Process
+
+### PR Templates
+
+Works alongside PR templates:
+- Fills template if present
+- Creates from scratch if no template
+- Preserves template sections
+
+### Review Requests
+
+Automatically request reviews:
+
+```yaml
+- name: Request reviews
+  run: |
+    gh pr edit ${{ github.event.pull_request.number }} \
+      --add-reviewer ${{ steps.reviewers.outputs.suggested }}
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Status Checks
+
+Add description quality check:
+
+```yaml
+- name: Validate description
+  run: |
+    LENGTH=$(echo "${{ steps.description.outputs.text }}" | wc -w)
+    if [ $LENGTH -lt 50 ]; then
+      echo "Description too short"
+      exit 1
+    fi
+```
+
+## Related Documentation
+
+- [Code Review Agent](./code-review.md) - Reviews PR content
+- [Codebase Librarian](./librarian.md) - Provides context
+- [Test Generation Agent](./test-generation.md) - Test coverage info

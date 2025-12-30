@@ -360,7 +360,21 @@ When adding new agents:
 
 ## References
 
+- **📚 [Comprehensive Agent Documentation](.github/agents/docs/README.md)** - Detailed docs for each agent type
 - Full implementation details: [powerhouse-agent-ecosystem.md](powerhouse-agent-ecosystem.md)
 - Incident runbook: [INCIDENT_RUNBOOK.md](.github/INCIDENT_RUNBOOK.md)
 - GitHub Actions documentation
 - Claude API documentation
+
+## Agent-Specific Documentation
+
+For detailed information about each agent, including configuration options, examples, and troubleshooting:
+
+- [📚 Codebase Librarian](.github/agents/docs/librarian.md) - Architecture mapping and knowledge maintenance
+- [👀 Code Review Agent](.github/agents/docs/code-review.md) - Automated code review with pattern enforcement
+- [🧪 Test Generation Agent](.github/agents/docs/test-generation.md) - Test coverage analysis and generation
+- [🔒 Security Audit Agent](.github/agents/docs/security-audit.md) - Vulnerability scanning and security monitoring
+- [📝 PR Prep Agent](.github/agents/docs/pr-prep.md) - Automated PR descriptions and labeling
+- [🏗️ Architecture Guardian](.github/agents/docs/architecture-guardian.md) - Architectural pattern enforcement
+- [🚀 Release Captain](.github/agents/docs/release-captain.md) - Release management and changelog generation
+- [🚨 Incident Responder](.github/agents/docs/incident-responder.md) - 24/7 production monitoring and incident response
