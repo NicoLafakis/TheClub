@@ -9,6 +9,10 @@ on:
   repository_dispatch:
     types: [librarian-refresh]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: read
@@ -30,71 +34,83 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install -g typescript ts-node
-          cd .github/agents/scripts && npm install
+          npm install -g typescript ts-node 2>/dev/null || true
+          if [ -d ".github/agents/scripts" ]; then
+            cd .github/agents/scripts && npm install
+          fi
 
       - name: Gather codebase metrics
         id: metrics
         run: |
           # Count files by type
-          echo "ts_files=$(find . -name '*.ts' -not -path './node_modules/*' | wc -l)" >> $GITHUB_OUTPUT
-          echo "js_files=$(find . -name '*.js' -not -path './node_modules/*' | wc -l)" >> $GITHUB_OUTPUT
-          echo "py_files=$(find . -name '*.py' -not -path './venv/*' | wc -l)" >> $GITHUB_OUTPUT
-          
+          TS_FILES=$(find . -name '*.ts' -not -path './node_modules/*' 2>/dev/null | wc -l)
+          JS_FILES=$(find . -name '*.js' -not -path './node_modules/*' 2>/dev/null | wc -l)
+          PY_FILES=$(find . -name '*.py' -not -path './venv/*' 2>/dev/null | wc -l)
+
+          echo "ts_files=$TS_FILES" >> $GITHUB_OUTPUT
+          echo "js_files=$JS_FILES" >> $GITHUB_OUTPUT
+          echo "py_files=$PY_FILES" >> $GITHUB_OUTPUT
+
           # Get directory structure
-          find . -type d -not -path './node_modules/*' -not -path './.git/*' -not -path './dist/*' | head -100 > dirs.txt
-          
+          find . -type d -not -path './node_modules/*' -not -path './.git/*' -not -path './dist/*' 2>/dev/null | head -100 > dirs.txt
+
           # Get all exports
-          grep -rh "^export " --include="*.ts" --include="*.js" . 2>/dev/null | head -500 > exports.txt
-          
-          # Get all imports  
-          grep -rh "^import " --include="*.ts" --include="*.js" . 2>/dev/null | head -1000 > imports.txt
-          
+          grep -rh "^export " --include="*.ts" --include="*.js" . 2>/dev/null | head -500 > exports.txt || true
+
+          # Get all imports
+          grep -rh "^import " --include="*.ts" --include="*.js" . 2>/dev/null | head -1000 > imports.txt || true
+
           # Get file change frequency (last 90 days)
-          git log --since="90 days ago" --name-only --pretty=format: | sort | uniq -c | sort -rn | head -100 > hot-files.txt
-          
+          git log --since="90 days ago" --name-only --pretty=format: 2>/dev/null | sort | uniq -c | sort -rn | head -100 > hot-files.txt || true
+
           # Get contributors per file area
           for dir in src lib app components; do
             if [ -d "$dir" ]; then
               echo "=== $dir ===" >> ownership.txt
-              git shortlog -sn --since="180 days ago" -- "$dir" | head -5 >> ownership.txt
+              git shortlog -sn --since="180 days ago" -- "$dir" 2>/dev/null | head -5 >> ownership.txt || true
             fi
           done
+          touch ownership.txt
 
-      - name: Build codebase map
+      - name: Build codebase context
+        id: context
         run: |
-          cat > codebase-context.txt << 'EOF'
-          # Codebase Analysis Context
-          
-          ## File Counts
-          TypeScript: ${{ steps.metrics.outputs.ts_files }}
-          JavaScript: ${{ steps.metrics.outputs.js_files }}
-          Python: ${{ steps.metrics.outputs.py_files }}
-          
-          ## Directory Structure
-          $(cat dirs.txt)
-          
-          ## Exports (sample)
-          $(head -100 exports.txt)
-          
-          ## Import Patterns (sample)
-          $(head -200 imports.txt)
-          
-          ## Hot Files (most changed recently)
-          $(cat hot-files.txt)
-          
-          ## Ownership
-          $(cat ownership.txt 2>/dev/null || echo "No ownership data")
-          EOF
+          # Build context file with proper variable expansion
+          {
+            echo "# Codebase Analysis Context"
+            echo ""
+            echo "## File Counts"
+            echo "TypeScript: ${{ steps.metrics.outputs.ts_files }}"
+            echo "JavaScript: ${{ steps.metrics.outputs.js_files }}"
+            echo "Python: ${{ steps.metrics.outputs.py_files }}"
+            echo ""
+            echo "## Directory Structure"
+            cat dirs.txt 2>/dev/null || echo "No directories found"
+            echo ""
+            echo "## Exports (sample)"
+            head -100 exports.txt 2>/dev/null || echo "No exports found"
+            echo ""
+            echo "## Import Patterns (sample)"
+            head -200 imports.txt 2>/dev/null || echo "No imports found"
+            echo ""
+            echo "## Hot Files (most changed recently)"
+            cat hot-files.txt 2>/dev/null || echo "No hot files data"
+            echo ""
+            echo "## Ownership"
+            cat ownership.txt 2>/dev/null || echo "No ownership data"
+          } > codebase-context.txt
 
       - name: Run Librarian Analysis
         id: analysis
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: .github/agents/prompts/librarian.md
-          context_files: codebase-context.txt package.json tsconfig.json
-          output_format: json
+          context_files: |
+            codebase-context.txt
+            package.json
+            tsconfig.json
+          output_mode: file
           output_file: .github/agents/knowledge/codebase-map.json
 
       - name: Commit knowledge update
@@ -102,5 +118,27 @@ jobs:
           git config user.name "Codebase Librarian"
           git config user.email "librarian@agents.local"
           git add .github/agents/knowledge/
-          git diff --staged --quiet || git commit -m "📚 Librarian: Update codebase knowledge [skip ci]"
-          git push
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📚 Librarian: Update codebase knowledge [skip ci]"
+
+            # Retry push with exponential backoff
+            for i in 1 2 3 4; do
+              if git push; then
+                echo "Push successful"
+                break
+              else
+                if [ $i -lt 4 ]; then
+                  SLEEP_TIME=$((2 ** i))
+                  echo "Push failed, retrying in ${SLEEP_TIME}s..."
+                  sleep $SLEEP_TIME
+                  git pull --rebase origin ${{ github.ref_name }} || true
+                else
+                  echo "Push failed after 4 attempts"
+                  exit 1
+                fi
+              fi
+            done
+          fi

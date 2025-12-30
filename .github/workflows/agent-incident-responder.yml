@@ -16,6 +16,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}
+  cancel-in-progress: false  # Don't cancel incident responses
+
 permissions:
   contents: write
   pull-requests: write
@@ -35,24 +39,25 @@ jobs:
     outputs:
       healthy: ${{ steps.check.outputs.healthy }}
       error: ${{ steps.check.outputs.error }}
-    
+
     steps:
       - name: Check application health
         id: check
         run: |
           set +e  # Don't exit on error
-          
-          if [ -z "${{ env.APP_HEALTH_URL }}" ]; then
+
+          APP_URL="${{ env.APP_HEALTH_URL }}"
+          if [ -z "$APP_URL" ]; then
             echo "APP_HEALTH_URL not configured, skipping health check"
             echo "healthy=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           RESPONSE=$(curl -s -o response.txt -w "%{http_code}" \
             --connect-timeout 10 \
             --max-time 30 \
-            "${{ env.APP_HEALTH_URL }}/health" 2>&1)
-          
+            "${APP_URL}/health" 2>&1)
+
           if [ "$RESPONSE" = "200" ]; then
             echo "healthy=true" >> $GITHUB_OUTPUT
             echo "✅ Health check passed"
@@ -60,7 +65,7 @@ jobs:
             echo "healthy=false" >> $GITHUB_OUTPUT
             echo "error=Health check failed: HTTP $RESPONSE" >> $GITHUB_OUTPUT
             echo "🚨 Health check failed: HTTP $RESPONSE"
-            cat response.txt || true
+            cat response.txt 2>/dev/null || true
           fi
 
       - name: Trigger incident response if unhealthy
@@ -74,7 +79,7 @@ jobs:
   respond:
     if: github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -88,8 +93,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd .github/agents/scripts
-          npm install
+          if [ -d ".github/agents/scripts" ]; then
+            cd .github/agents/scripts && npm install
+          fi
 
       - name: Parse incident details
         id: incident
@@ -101,11 +107,15 @@ jobs:
             ERROR='${{ github.event.inputs.error_message }}'
             SOURCE='${{ github.event.inputs.error_source }}'
           fi
-          
+
+          # Handle empty values
+          ERROR="${ERROR:-Unknown error}"
+          SOURCE="${SOURCE:-unknown}"
+
           echo "error=$ERROR" >> $GITHUB_OUTPUT
           echo "source=$SOURCE" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          
+
           # Create incident ID
           INCIDENT_ID="INC-$(date +%Y%m%d)-${{ github.run_number }}"
           echo "incident_id=$INCIDENT_ID" >> $GITHUB_OUTPUT
@@ -114,29 +124,32 @@ jobs:
         id: logs
         run: |
           # Fetch recent logs from Railway (if available)
-          if [ -n "${{ env.RAILWAY_API_URL }}" ] && [ -n "${{ secrets.RAILWAY_TOKEN }}" ]; then
-            curl -s -H "Authorization: Bearer ${{ secrets.RAILWAY_TOKEN }}" \
-              "${{ env.RAILWAY_API_URL }}/logs?limit=100" > railway-logs.json 2>/dev/null || echo "{}" > railway-logs.json
+          RAILWAY_URL="${{ env.RAILWAY_API_URL }}"
+          RAILWAY_TOKEN="${{ secrets.RAILWAY_TOKEN }}"
+
+          if [ -n "$RAILWAY_URL" ] && [ -n "$RAILWAY_TOKEN" ]; then
+            curl -s -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              "${RAILWAY_URL}/logs?limit=100" > railway-logs.json 2>/dev/null || echo '{"logs":[]}' > railway-logs.json
           else
-            echo "{}" > railway-logs.json
+            echo '{"logs":[]}' > railway-logs.json
           fi
-          
-          echo "Logs fetched" >> $GITHUB_OUTPUT
+
+          echo "Logs fetched"
 
       - name: Gather diagnostic context
         run: |
           # Get recent changes that might be related
-          git log --oneline -20 > recent-commits.txt
-          
-          # Get files changed in last day
-          git diff --name-only HEAD~10 > recent-changes.txt 2>/dev/null || true
-          
+          git log --oneline -20 > recent-commits.txt 2>/dev/null || touch recent-commits.txt
+
+          # Get files changed in last commits
+          git diff --name-only HEAD~10 > recent-changes.txt 2>/dev/null || touch recent-changes.txt
+
           # Check for recent deployments (look for release/deploy commits)
-          git log --oneline --since="24 hours ago" --grep="release\|deploy" > recent-deploys.txt || true
+          git log --oneline --since="24 hours ago" --grep="release\|deploy" > recent-deploys.txt 2>/dev/null || touch recent-deploys.txt
 
       - name: Run incident diagnosis
         id: diagnosis
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: .github/agents/prompts/incident-responder.md
@@ -150,22 +163,26 @@ jobs:
             Error: ${{ steps.incident.outputs.error }}
             Source: ${{ steps.incident.outputs.source }}
             Timestamp: ${{ steps.incident.outputs.timestamp }}
-          output_format: json
+          output_mode: file
           output_file: diagnosis.json
 
       - name: Parse diagnosis and determine action
         id: action
         run: |
+          # Ensure diagnosis.json exists and is valid
+          if [ ! -f "diagnosis.json" ]; then
+            echo '{"severity":"medium","canAutoFix":false,"rootCause":"Unable to diagnose"}' > diagnosis.json
+          fi
+
           # Parse the diagnosis
-          SEVERITY=$(jq -r '.severity // "medium"' diagnosis.json)
-          CAN_AUTO_FIX=$(jq -r '.canAutoFix // false' diagnosis.json)
-          ROOT_CAUSE=$(jq -r '.rootCause // "Unknown"' diagnosis.json)
-          FIX_DESCRIPTION=$(jq -r '.fixDescription // "Manual investigation required"' diagnosis.json)
-          
+          SEVERITY=$(jq -r '.severity // "medium"' diagnosis.json 2>/dev/null || echo "medium")
+          CAN_AUTO_FIX=$(jq -r '.canAutoFix // false' diagnosis.json 2>/dev/null || echo "false")
+          ROOT_CAUSE=$(jq -r '.rootCause // "Unknown"' diagnosis.json 2>/dev/null || echo "Unknown")
+
           echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
           echo "can_auto_fix=$CAN_AUTO_FIX" >> $GITHUB_OUTPUT
           echo "root_cause=$ROOT_CAUSE" >> $GITHUB_OUTPUT
-          
+
           # Determine action
           if [ "$CAN_AUTO_FIX" = "true" ] && [ "$SEVERITY" != "critical" ]; then
             echo "action=auto-fix" >> $GITHUB_OUTPUT
@@ -187,45 +204,52 @@ jobs:
             } catch (e) {
               diagnosis = { severity: 'medium', rootCause: 'Unknown', analysis: 'Could not parse diagnosis' };
             }
-            
+
+            const affectedFiles = diagnosis.affectedFiles?.length > 0
+              ? '- ' + diagnosis.affectedFiles.join('\n- ')
+              : 'Unknown';
+
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `🚨 Incident: ${(diagnosis.rootCause || 'Unknown').substring(0, 50)}`,
               body: `## Incident Report
 
-**ID**: ${{ steps.incident.outputs.incident_id }}
-**Severity**: ${diagnosis.severity || 'medium'}
-**Detected**: ${{ steps.incident.outputs.timestamp }}
+            **ID**: ${{ steps.incident.outputs.incident_id }}
+            **Severity**: ${diagnosis.severity || 'medium'}
+            **Detected**: ${{ steps.incident.outputs.timestamp }}
 
-### Error
-\`\`\`
-${{ steps.incident.outputs.error }}
-\`\`\`
+            ### Error
+            \`\`\`
+            ${{ steps.incident.outputs.error }}
+            \`\`\`
 
-### Diagnosis
+            ### Diagnosis
 
-**Root Cause**: ${diagnosis.rootCause || 'Unknown'}
+            **Root Cause**: ${diagnosis.rootCause || 'Unknown'}
 
-**Analysis**:
-${diagnosis.analysis || 'Unable to determine'}
+            **Analysis**:
+            ${diagnosis.analysis || 'Unable to determine'}
 
-### Recommended Fix
+            ### Recommended Fix
 
-${diagnosis.fixDescription || 'Manual investigation required'}
+            ${diagnosis.fixDescription || 'Manual investigation required'}
 
-### Affected Files
-${diagnosis.affectedFiles?.join('\n- ') || 'Unknown'}
+            ### Affected Files
+            ${affectedFiles}
 
----
-*Generated by Incident Responder*`,
+            ---
+            *Generated by Incident Responder*`,
               labels: ['incident', diagnosis.severity || 'medium', 'needs-investigation']
             });
 
       - name: Send escalation notification
         if: steps.action.outputs.action == 'escalate-immediate' || steps.action.outputs.severity == 'critical'
         run: |
-          if [ -n "${{ env.RESEND_API_KEY }}" ] && [ -n "${{ env.ALERT_EMAIL }}" ]; then
+          RESEND_KEY="${{ env.RESEND_API_KEY }}"
+          ALERT_ADDR="${{ env.ALERT_EMAIL }}"
+
+          if [ -n "$RESEND_KEY" ] && [ -n "$ALERT_ADDR" ]; then
             node .github/agents/scripts/send-notification.js
           else
             echo "⚠️ Email notification skipped - RESEND_API_KEY or ALERT_EMAIL not configured"
@@ -243,10 +267,33 @@ ${diagnosis.affectedFiles?.join('\n- ') || 'Unknown'}
       - name: Log incident to history
         run: |
           mkdir -p .github/agents/knowledge
+
+          # Append incident to history
           echo "${{ steps.incident.outputs.incident_id }},${{ steps.incident.outputs.timestamp }},${{ steps.action.outputs.severity }},${{ steps.action.outputs.action }}" >> .github/agents/knowledge/incident-history.csv
-          
+
           git config user.name "Incident Responder"
           git config user.email "incident@agents.local"
           git add .github/agents/knowledge/incident-history.csv
-          git diff --staged --quiet || git commit -m "📊 Log incident ${{ steps.incident.outputs.incident_id }} [skip ci]"
-          git push || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📊 Log incident ${{ steps.incident.outputs.incident_id }} [skip ci]"
+
+            # Retry push with backoff
+            for i in 1 2 3 4; do
+              if git push; then
+                echo "Push successful"
+                break
+              else
+                if [ $i -lt 4 ]; then
+                  SLEEP_TIME=$((2 ** i))
+                  echo "Push failed, retrying in ${SLEEP_TIME}s..."
+                  sleep $SLEEP_TIME
+                  git pull --rebase origin ${{ github.ref_name }} 2>/dev/null || true
+                else
+                  echo "Push failed after 4 attempts"
+                fi
+              fi
+            done
+          fi

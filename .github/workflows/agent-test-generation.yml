@@ -16,6 +16,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write
@@ -39,30 +43,33 @@ jobs:
         run: |
           # Try to run coverage if available
           if [ -f "package.json" ] && grep -q "coverage" package.json; then
-            npm ci
+            npm ci 2>/dev/null || true
             npm run coverage -- --json --outputFile=coverage.json 2>/dev/null || true
           fi
-          
-          # Find test files
-          find . -name "*.test.ts" -o -name "*.spec.ts" -o -name "*.test.js" -o -name "*.spec.js" \
-            -not -path "./node_modules/*" > existing-tests.txt
-          
-          echo "test_count=$(wc -l < existing-tests.txt)" >> $GITHUB_OUTPUT
+
+          # Find test files (with proper grouping)
+          find . \( -name "*.test.ts" -o -name "*.spec.ts" -o -name "*.test.js" -o -name "*.spec.js" \) \
+            -not -path "./node_modules/*" > existing-tests.txt 2>/dev/null || true
+
+          TEST_COUNT=$(wc -l < existing-tests.txt 2>/dev/null | tr -d ' ' || echo "0")
+          echo "test_count=$TEST_COUNT" >> $GITHUB_OUTPUT
 
       - name: Get files needing tests
         id: targets
         run: |
+          touch files-to-test.txt
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Get changed source files
-            git diff --name-only origin/${{ github.base_ref }}...HEAD | \
+            git fetch origin ${{ github.base_ref }} 2>/dev/null || true
+            git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null | \
               grep -E '\.(ts|js|py)$' | \
               grep -v '\.test\.' | \
               grep -v '\.spec\.' | \
-              grep -v 'node_modules' > files-to-test.txt
+              grep -v 'node_modules' > files-to-test.txt || true
           else
             # Find source files without corresponding test files
-            find . -name "*.ts" -o -name "*.js" | \
-              grep -v node_modules | \
+            find . \( -name "*.ts" -o -name "*.js" \) -not -path "./node_modules/*" 2>/dev/null | \
               grep -v '\.test\.' | \
               grep -v '\.spec\.' | \
               grep -v '\.d\.ts' | \
@@ -70,26 +77,29 @@ jobs:
                 test_file="${f%.*}.test.${f##*.}"
                 spec_file="${f%.*}.spec.${f##*.}"
                 [ ! -f "$test_file" ] && [ ! -f "$spec_file" ] && echo "$f"
-              done > files-to-test.txt
+              done > files-to-test.txt || true
           fi
-          
+
           # Limit to reasonable number
           head -20 files-to-test.txt > targets.txt
-          echo "target_count=$(wc -l < targets.txt)" >> $GITHUB_OUTPUT
+          TARGET_COUNT=$(wc -l < targets.txt 2>/dev/null | tr -d ' ' || echo "0")
+          echo "target_count=$TARGET_COUNT" >> $GITHUB_OUTPUT
 
       - name: Generate test suggestions
-        if: steps.targets.outputs.target_count > 0
-        uses: anthropics/claude-code-action@v1
+        # Fixed: proper string comparison for numeric values
+        if: steps.targets.outputs.target_count != '0' && steps.targets.outputs.target_count != ''
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt_file: .github/agents/prompts/test-generation.md
           context_files: |
             targets.txt
             existing-tests.txt
             .github/agents/knowledge/codebase-map.json
-          source_files_from: targets.txt
-          output_mode: ${{ github.event_name == 'pull_request' && 'pr_comment' || 'branch' }}
-          branch_name: agent/tests-${{ github.run_number }}
-          commit_message: "🧪 Test Agent: Add suggested tests"
-          pr_title: "🧪 Test Agent: Suggested tests for coverage gaps"
-          pr_labels: agent-generated,tests
+          additional_context: |
+            Event type: ${{ github.event_name }}
+            Target file count: ${{ steps.targets.outputs.target_count }}
+          output_mode: ${{ github.event_name == 'pull_request' && 'pr_comment' || 'file' }}
+          output_file: test-suggestions.md
+          comment_header: "## 🧪 Test Generation Agent"

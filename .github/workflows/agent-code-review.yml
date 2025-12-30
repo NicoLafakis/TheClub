@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -13,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     # Don't run on PRs from agents
     if: "!contains(github.event.pull_request.labels.*.name, 'agent-generated')"
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,9 +27,10 @@ jobs:
       - name: Get PR diff
         id: diff
         run: |
+          git fetch origin ${{ github.base_ref }}
           git diff origin/${{ github.base_ref }}...HEAD > pr-diff.txt
           git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt
-          echo "file_count=$(wc -l < changed-files.txt)" >> $GITHUB_OUTPUT
+          echo "file_count=$(wc -l < changed-files.txt | tr -d ' ')" >> $GITHUB_OUTPUT
 
       - name: Load codebase knowledge
         id: knowledge
@@ -39,15 +44,23 @@ jobs:
       - name: Get related code context
         run: |
           # For each changed file, get related files from the same directory
-          while read file; do
-            dir=$(dirname "$file")
-            find "$dir" -maxdepth 1 -name "*.ts" -o -name "*.js" -o -name "*.py" 2>/dev/null | head -5
-          done < changed-files.txt | sort -u > related-files.txt
+          # Fixed: proper grouping for find -o options
+          touch related-files.txt
+          while IFS= read -r file; do
+            if [ -n "$file" ]; then
+              dir=$(dirname "$file")
+              if [ -d "$dir" ]; then
+                find "$dir" -maxdepth 1 \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) 2>/dev/null | head -5 >> related-files.txt
+              fi
+            fi
+          done < changed-files.txt
+          sort -u related-files.txt -o related-files.txt
 
       - name: Run Code Review
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt_file: .github/agents/prompts/code-review.md
           context_files: |
             pr-diff.txt
@@ -55,7 +68,3 @@ jobs:
             .github/agents/knowledge/codebase-map.json
           output_mode: pr_comment
           comment_header: "## 👀 Code Review Agent"
-
-      - name: Update review timestamp
-        run: |
-          echo "${{ github.event.pull_request.number }}" >> .github/agents/knowledge/reviewed-prs.log

@@ -7,6 +7,10 @@ on:
     - cron: '0 2 * * *'  # Daily at 2am UTC
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -21,43 +25,64 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
       - name: Analyze imports and dependencies
         run: |
           # Build import graph
           echo "# Import Analysis" > import-analysis.txt
-          
+
           # Find potential layer violations
           echo "## Potential Layer Violations" >> import-analysis.txt
-          
+
           # Components importing from API directly
-          grep -rn "from.*api\|from.*server" --include="*.tsx" --include="*.jsx" src/components 2>/dev/null >> import-analysis.txt || true
-          
+          if [ -d "src/components" ]; then
+            grep -rn "from.*api\|from.*server" --include="*.tsx" --include="*.jsx" src/components 2>/dev/null >> import-analysis.txt || echo "No component-to-api imports found" >> import-analysis.txt
+          fi
+
           # API routes importing from components
-          grep -rn "from.*components" --include="*.ts" --include="*.js" src/api 2>/dev/null >> import-analysis.txt || true
-          
+          if [ -d "src/api" ]; then
+            grep -rn "from.*components" --include="*.ts" --include="*.js" src/api 2>/dev/null >> import-analysis.txt || echo "No api-to-component imports found" >> import-analysis.txt
+          fi
+
           # Find circular dependencies (simplified check)
+          echo "" >> import-analysis.txt
           echo "## Import Patterns" >> import-analysis.txt
           grep -rh "^import " --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" . 2>/dev/null | \
             grep -v node_modules | \
             sed 's/.*from ["\x27]\([^"\x27]*\)["\x27].*/\1/' | \
-            sort | uniq -c | sort -rn | head -30 >> import-analysis.txt
+            sort | uniq -c | sort -rn | head -30 >> import-analysis.txt || echo "No imports found" >> import-analysis.txt
 
-      - name: Get changed patterns
+      - name: Get changed patterns (PR only)
         if: github.event_name == 'pull_request'
         run: |
-          git diff origin/${{ github.base_ref }}...HEAD > diff.txt
-          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt
+          git fetch origin ${{ github.base_ref }} 2>/dev/null || true
+          git diff origin/${{ github.base_ref }}...HEAD > diff.txt 2>/dev/null || touch diff.txt
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt 2>/dev/null || touch changed-files.txt
+
+      - name: Prepare context for scheduled runs
+        if: github.event_name != 'pull_request'
+        run: |
+          # Create empty diff file for non-PR runs
+          echo "# Scheduled Architecture Review" > diff.txt
+          echo "This is a scheduled review, not a PR review." >> diff.txt
 
       - name: Run Architecture Analysis
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt_file: .github/agents/prompts/architecture-guardian.md
           context_files: |
             import-analysis.txt
             .github/agents/knowledge/codebase-map.json
-            ${{ github.event_name == 'pull_request' && 'diff.txt' || '' }}
+            diff.txt
+          additional_context: |
+            Event type: ${{ github.event_name }}
+            Date: ${{ steps.date.outputs.date }}
           output_mode: ${{ github.event_name == 'pull_request' && 'pr_comment' || 'issue' }}
           comment_header: "## 🏗️ Architecture Review"
-          issue_title: "🏗️ Architecture Report - $(date +%Y-%m-%d)"
+          issue_title: "🏗️ Architecture Report - ${{ steps.date.outputs.date }}"
           issue_labels: architecture,automated
