@@ -2,7 +2,6 @@
 
 > Transform your GitHub repository into a workspace where AI agents work alongside humans as dedicated team members.
 
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/NicoLafakis/TheClub/agent-orchestrator.yml)](https://github.com/NicoLafakis/TheClub/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## What is TheClub?
