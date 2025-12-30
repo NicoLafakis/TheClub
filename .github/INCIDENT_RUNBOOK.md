@@ -1,0 +1,226 @@
+# Incident Runbook
+
+This runbook provides procedures for handling production incidents detected by the Incident Responder agent.
+
+## Severity Levels
+
+| Level | Description | Response Time | Escalation |
+|-------|-------------|---------------|------------|
+| 🔴 **Critical** | Service down, data loss, security breach | Immediate | Auto-escalates via email |
+| 🟠 **High** | Major feature broken, significant user impact | 15 minutes | Creates urgent issue |
+| 🟡 **Medium** | Feature degraded, workaround exists | 1 hour | Creates issue |
+| 🟢 **Low** | Minor issue, cosmetic, edge case | Next business day | Creates issue |
+
+---
+
+## When You Receive an Incident Alert
+
+### 1. Acknowledge the Incident
+
+- Comment on the GitHub issue to indicate you're investigating
+- If critical, notify the team in Slack/Discord
+
+### 2. Assess the Situation
+
+Check the incident issue for:
+- **Error message** - What exactly failed?
+- **Root cause analysis** - What does the agent think happened?
+- **Affected files** - Where in the codebase?
+- **Recent commits** - Was this caused by a recent change?
+
+### 3. Verify the Impact
+
+```bash
+# Check application status
+curl -s https://your-app.com/health
+
+# Check logs (Railway)
+railway logs
+
+# Check recent deployments
+git log --oneline -10
+```
+
+### 4. Determine Response Strategy
+
+| Situation | Action |
+|-----------|--------|
+| Recent deployment caused it | Consider rollback |
+| Infrastructure issue | Check Railway/hosting status |
+| Code bug | Create fix PR |
+| External dependency | Check third-party status |
+| Data issue | Check database health |
+
+---
+
+## Common Incident Types
+
+### Health Check Failures
+
+**Symptoms**: HTTP 5xx from `/health` endpoint
+
+**Possible Causes**:
+- Database connection lost
+- Memory exhaustion
+- Crashed process
+- Network issues
+
+**Resolution Steps**:
+1. Check Railway dashboard for container status
+2. Review recent logs for errors
+3. Check database connectivity
+4. Restart service if transient
+
+### Authentication Errors
+
+**Symptoms**: Users can't log in, JWT errors
+
+**Possible Causes**:
+- Expired secrets
+- Misconfigured environment variables
+- Rate limiting
+
+**Resolution Steps**:
+1. Verify `JWT_SECRET` is set
+2. Check auth provider status (if OAuth)
+3. Review auth-related logs
+
+### Database Connection Issues
+
+**Symptoms**: Connection refused, timeout errors
+
+**Possible Causes**:
+- Database down
+- Connection pool exhausted
+- Network partition
+- Credential rotation
+
+**Resolution Steps**:
+1. Check database status in hosting dashboard
+2. Verify `DATABASE_URL` is correct
+3. Check connection pool settings
+4. Look for connection leaks in recent changes
+
+### Out of Memory
+
+**Symptoms**: Process killed, OOM errors
+
+**Possible Causes**:
+- Memory leak in code
+- Large data processing
+- Insufficient resources
+
+**Resolution Steps**:
+1. Scale up resources temporarily
+2. Review recent memory-intensive changes
+3. Add memory profiling
+4. Implement pagination/streaming
+
+---
+
+## Rollback Procedure
+
+If a recent deployment caused the issue:
+
+```bash
+# Find the last working commit
+git log --oneline -20
+
+# Create a revert PR
+git revert <bad-commit-hash>
+git push origin revert-branch
+
+# Or deploy previous version directly (Railway)
+railway up --detach --ref <good-commit>
+```
+
+---
+
+## Post-Incident
+
+### 1. Document the Incident
+
+Update the GitHub issue with:
+- What happened
+- Timeline of events
+- Root cause
+- Resolution
+- Prevention measures
+
+### 2. Create Follow-up Tasks
+
+- File issues for any technical debt discovered
+- Update monitoring/alerting if needed
+- Add tests to prevent regression
+
+### 3. Update Knowledge Base
+
+If this is a new type of incident:
+- Add to this runbook
+- Update agent prompts if the diagnosis was wrong
+- Consider adding automated detection
+
+---
+
+## Escalation Contacts
+
+| Role | Contact | When to Escalate |
+|------|---------|------------------|
+| On-call Engineer | Check schedule | First response |
+| Team Lead | @lead | Critical issues, >30 min unresolved |
+| Security | @security | Any security-related incident |
+
+---
+
+## Useful Commands
+
+```bash
+# Check application health
+curl -I https://your-app.com/health
+
+# View recent logs
+railway logs --tail 100
+
+# Check deployment status
+railway status
+
+# View environment variables
+railway variables
+
+# Redeploy last commit
+railway up --detach
+
+# Connect to database
+railway connect postgres
+```
+
+---
+
+## Agent Commands
+
+```bash
+# Manually trigger incident analysis
+gh workflow run agent-incident-responder.yml \
+  --field error_message="Error description" \
+  --field error_source="manual"
+
+# Trigger full knowledge refresh
+gh workflow run agent-orchestrator.yml \
+  --field action="full-refresh"
+
+# Run security audit
+gh workflow run agent-security-audit.yml
+```
+
+---
+
+## Monitoring URLs
+
+- **Application**: https://your-app.com
+- **Health Check**: https://your-app.com/health
+- **Railway Dashboard**: https://railway.app/dashboard
+- **GitHub Actions**: https://github.com/NicoLafakis/TheClub/actions
+
+---
+
+*Last updated: Auto-generated by Agent Ecosystem*

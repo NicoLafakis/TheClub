@@ -1,0 +1,124 @@
+name: PR Prep Agent
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # Only run if PR has no description or minimal description
+    if: github.event.pull_request.body == '' || github.event.pull_request.body == null
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gather PR context
+        id: context
+        run: |
+          # Get diff stats
+          STATS=$(git diff --stat origin/${{ github.base_ref }}...HEAD | tail -1)
+          echo "stats=$STATS" >> $GITHUB_OUTPUT
+          
+          # Get commit messages
+          git log --oneline origin/${{ github.base_ref }}...HEAD > commits.txt
+          
+          # Get changed files
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt
+          
+          # Categorize changes
+          COMPONENTS=$(grep -c "components/" changed-files.txt 2>/dev/null || echo 0)
+          API=$(grep -c "api/" changed-files.txt 2>/dev/null || echo 0)
+          TESTS=$(grep -cE "\.test\.|\.spec\." changed-files.txt 2>/dev/null || echo 0)
+          DOCS=$(grep -cE "\.md$|docs/" changed-files.txt 2>/dev/null || echo 0)
+          
+          echo "components=$COMPONENTS" >> $GITHUB_OUTPUT
+          echo "api=$API" >> $GITHUB_OUTPUT
+          echo "tests=$TESTS" >> $GITHUB_OUTPUT
+          echo "docs=$DOCS" >> $GITHUB_OUTPUT
+          
+          # Estimate review time (rough: 1 min per 20 lines changed)
+          LINES=$(git diff --shortstat origin/${{ github.base_ref }}...HEAD | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
+          MINUTES=$((${LINES:-0} / 20 + 5))
+          echo "review_mins=$MINUTES" >> $GITHUB_OUTPUT
+
+      - name: Find related issues
+        id: issues
+        run: |
+          # Look for issue references in commits and branch name
+          BRANCH="${{ github.head_ref }}"
+          ISSUES=$(echo "$BRANCH" | grep -oE '#[0-9]+|[0-9]+' | head -3 | tr '\n' ' ')
+          
+          # Also check commits
+          COMMIT_ISSUES=$(grep -ohE '#[0-9]+' commits.txt | sort -u | tr '\n' ' ')
+          
+          echo "related=$ISSUES $COMMIT_ISSUES" >> $GITHUB_OUTPUT
+
+      - name: Determine suggested reviewers
+        id: reviewers
+        run: |
+          # Get top contributors to changed files
+          REVIEWERS=""
+          while read file; do
+            CONTRIBUTOR=$(git log -1 --format='%an' -- "$file" 2>/dev/null)
+            if [ -n "$CONTRIBUTOR" ] && [ "$CONTRIBUTOR" != "${{ github.event.pull_request.user.login }}" ]; then
+              REVIEWERS="$REVIEWERS $CONTRIBUTOR"
+            fi
+          done < changed-files.txt
+          
+          # Dedupe and limit
+          echo "$REVIEWERS" | tr ' ' '\n' | sort | uniq | head -3 | tr '\n' ' ' > reviewers.txt
+          echo "suggested=$(cat reviewers.txt)" >> $GITHUB_OUTPUT
+
+      - name: Generate PR description
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/agents/prompts/pr-prep.md
+          context_files: |
+            commits.txt
+            changed-files.txt
+            .github/agents/knowledge/codebase-map.json
+          additional_context: |
+            Stats: ${{ steps.context.outputs.stats }}
+            Components changed: ${{ steps.context.outputs.components }}
+            API changes: ${{ steps.context.outputs.api }}
+            Tests: ${{ steps.context.outputs.tests }}
+            Docs: ${{ steps.context.outputs.docs }}
+            Estimated review time: ${{ steps.context.outputs.review_mins }} minutes
+            Related issues: ${{ steps.issues.outputs.related }}
+            Suggested reviewers: ${{ steps.reviewers.outputs.suggested }}
+          output_mode: pr_description
+          
+      - name: Add labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [];
+            
+            // Size labels
+            const stats = `${{ steps.context.outputs.stats }}`;
+            const insertions = parseInt(stats.match(/(\d+) insertion/)?.[1] || 0);
+            if (insertions < 50) labels.push('size/small');
+            else if (insertions < 200) labels.push('size/medium');
+            else labels.push('size/large');
+            
+            // Type labels
+            if (${{ steps.context.outputs.components }} > 0) labels.push('area/frontend');
+            if (${{ steps.context.outputs.api }} > 0) labels.push('area/backend');
+            if (${{ steps.context.outputs.tests }} > 0) labels.push('includes/tests');
+            if (${{ steps.context.outputs.docs }} > 0) labels.push('includes/docs');
+            
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: labels
+            });

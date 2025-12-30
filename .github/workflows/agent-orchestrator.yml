@@ -1,0 +1,152 @@
+name: Agent Orchestrator
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Morning digest at 6am UTC
+    - cron: '0 17 * * *'  # End of day summary at 5pm UTC
+    - cron: '0 23 * * *'  # Nightly cleanup at 11pm UTC
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Orchestrator action'
+        required: true
+        type: choice
+        options:
+          - daily-digest
+          - health-report
+          - cleanup
+          - full-refresh
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  morning-digest:
+    if: github.event.schedule == '0 6 * * *' || github.event.inputs.action == 'daily-digest'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd .github/agents/scripts
+          npm install
+
+      - name: Gather agent activity
+        run: |
+          # Get yesterday's activity
+          YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+          
+          # PRs opened/merged
+          gh pr list --state all --json number,title,state,createdAt,mergedAt,labels | \
+            jq --arg date "$YESTERDAY" '[.[] | select(.createdAt | startswith($date))]' > pr-activity.json
+          
+          # Issues created
+          gh issue list --state all --json number,title,state,createdAt,labels | \
+            jq --arg date "$YESTERDAY" '[.[] | select(.createdAt | startswith($date))]' > issue-activity.json
+          
+          # Commits to main
+          git log --since="$YESTERDAY" --until="today" --oneline origin/main > commits.txt 2>/dev/null || echo "No commits" > commits.txt
+          
+          # Agent-generated items
+          gh pr list --label "agent-generated" --json number,title,state > agent-prs.json
+          gh issue list --label "automated" --json number,title,state > agent-issues.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load agent knowledge
+        run: |
+          cat .github/agents/knowledge/*.json 2>/dev/null | jq -s 'add' > combined-knowledge.json || echo "{}" > combined-knowledge.json
+
+      - name: Generate daily digest
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Generate a daily digest email for the development team.
+            
+            Include:
+            1. Repository activity summary (PRs, commits, issues)
+            2. Agent activity (what each agent did)
+            3. Outstanding items needing attention
+            4. Health metrics from codebase knowledge
+            
+            Format as HTML email.
+          context_files: |
+            pr-activity.json
+            issue-activity.json
+            commits.txt
+            agent-prs.json
+            agent-issues.json
+            combined-knowledge.json
+          output_file: daily-digest.html
+
+      - name: Send daily digest
+        if: env.RESEND_API_KEY != '' && env.TEAM_EMAIL != ''
+        run: |
+          node .github/agents/scripts/send-notification.js
+        env:
+          NOTIFICATION_TYPE: daily-digest
+          DIGEST_FILE: daily-digest.html
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RECIPIENT_EMAIL: ${{ secrets.TEAM_EMAIL }}
+
+  cleanup:
+    if: github.event.schedule == '0 23 * * *' || github.event.inputs.action == 'cleanup'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Close stale agent PRs
+        run: |
+          # Close agent-generated PRs older than 7 days with no activity
+          STALE_DATE=$(date -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -v-7d +%Y-%m-%dT%H:%M:%SZ)
+          
+          gh pr list --label "agent-generated" --json number,updatedAt | \
+            jq --arg date "$STALE_DATE" '.[] | select(.updatedAt < $date) | .number' | \
+            xargs -I {} gh pr close {} --comment "Closing stale agent-generated PR. Please reopen if still needed." 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Archive old issues
+        run: |
+          # Add "stale" label to automated issues older than 14 days
+          STALE_DATE=$(date -d "14 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -v-14d +%Y-%m-%dT%H:%M:%SZ)
+          
+          gh issue list --label "automated" --state open --json number,updatedAt | \
+            jq --arg date "$STALE_DATE" '.[] | select(.updatedAt < $date) | .number' | \
+            xargs -I {} gh issue edit {} --add-label "stale" 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  refresh-knowledge:
+    if: github.event.inputs.action == 'full-refresh'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Trigger Librarian refresh
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          event-type: librarian-refresh
+
+      - name: Wait for Librarian
+        run: sleep 120  # Wait 2 minutes for Librarian to complete
+
+      - name: Trigger Architecture Guardian
+        run: |
+          gh workflow run agent-architecture-guardian.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

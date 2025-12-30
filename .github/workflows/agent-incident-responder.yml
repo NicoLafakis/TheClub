@@ -1,0 +1,252 @@
+name: Incident Responder
+
+on:
+  repository_dispatch:
+    types: [railway-error, health-check-failed]
+  schedule:
+    - cron: '*/5 * * * *'  # Health check every 5 minutes
+  workflow_dispatch:
+    inputs:
+      error_message:
+        description: 'Error to investigate'
+        required: false
+        type: string
+      error_source:
+        description: 'Where the error occurred'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  RAILWAY_API_URL: ${{ secrets.RAILWAY_API_URL }}
+  APP_HEALTH_URL: ${{ secrets.APP_HEALTH_URL }}
+  RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+  ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+
+jobs:
+  # Health check job - runs every 5 minutes
+  health-check:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      healthy: ${{ steps.check.outputs.healthy }}
+      error: ${{ steps.check.outputs.error }}
+    
+    steps:
+      - name: Check application health
+        id: check
+        run: |
+          set +e  # Don't exit on error
+          
+          if [ -z "${{ env.APP_HEALTH_URL }}" ]; then
+            echo "APP_HEALTH_URL not configured, skipping health check"
+            echo "healthy=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          RESPONSE=$(curl -s -o response.txt -w "%{http_code}" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "${{ env.APP_HEALTH_URL }}/health" 2>&1)
+          
+          if [ "$RESPONSE" = "200" ]; then
+            echo "healthy=true" >> $GITHUB_OUTPUT
+            echo "✅ Health check passed"
+          else
+            echo "healthy=false" >> $GITHUB_OUTPUT
+            echo "error=Health check failed: HTTP $RESPONSE" >> $GITHUB_OUTPUT
+            echo "🚨 Health check failed: HTTP $RESPONSE"
+            cat response.txt || true
+          fi
+
+      - name: Trigger incident response if unhealthy
+        if: steps.check.outputs.healthy == 'false'
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          event-type: health-check-failed
+          client-payload: '{"error": "${{ steps.check.outputs.error }}", "source": "health-check", "timestamp": "${{ github.run_id }}"}'
+
+  # Main incident response job
+  respond:
+    if: github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd .github/agents/scripts
+          npm install
+
+      - name: Parse incident details
+        id: incident
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            ERROR='${{ github.event.client_payload.error }}'
+            SOURCE='${{ github.event.client_payload.source }}'
+          else
+            ERROR='${{ github.event.inputs.error_message }}'
+            SOURCE='${{ github.event.inputs.error_source }}'
+          fi
+          
+          echo "error=$ERROR" >> $GITHUB_OUTPUT
+          echo "source=$SOURCE" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          
+          # Create incident ID
+          INCIDENT_ID="INC-$(date +%Y%m%d)-${{ github.run_number }}"
+          echo "incident_id=$INCIDENT_ID" >> $GITHUB_OUTPUT
+
+      - name: Fetch Railway logs
+        id: logs
+        run: |
+          # Fetch recent logs from Railway (if available)
+          if [ -n "${{ env.RAILWAY_API_URL }}" ] && [ -n "${{ secrets.RAILWAY_TOKEN }}" ]; then
+            curl -s -H "Authorization: Bearer ${{ secrets.RAILWAY_TOKEN }}" \
+              "${{ env.RAILWAY_API_URL }}/logs?limit=100" > railway-logs.json 2>/dev/null || echo "{}" > railway-logs.json
+          else
+            echo "{}" > railway-logs.json
+          fi
+          
+          echo "Logs fetched" >> $GITHUB_OUTPUT
+
+      - name: Gather diagnostic context
+        run: |
+          # Get recent changes that might be related
+          git log --oneline -20 > recent-commits.txt
+          
+          # Get files changed in last day
+          git diff --name-only HEAD~10 > recent-changes.txt 2>/dev/null || true
+          
+          # Check for recent deployments (look for release/deploy commits)
+          git log --oneline --since="24 hours ago" --grep="release\|deploy" > recent-deploys.txt || true
+
+      - name: Run incident diagnosis
+        id: diagnosis
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/agents/prompts/incident-responder.md
+          context_files: |
+            railway-logs.json
+            recent-commits.txt
+            recent-changes.txt
+            .github/agents/knowledge/codebase-map.json
+          additional_context: |
+            Incident ID: ${{ steps.incident.outputs.incident_id }}
+            Error: ${{ steps.incident.outputs.error }}
+            Source: ${{ steps.incident.outputs.source }}
+            Timestamp: ${{ steps.incident.outputs.timestamp }}
+          output_format: json
+          output_file: diagnosis.json
+
+      - name: Parse diagnosis and determine action
+        id: action
+        run: |
+          # Parse the diagnosis
+          SEVERITY=$(jq -r '.severity // "medium"' diagnosis.json)
+          CAN_AUTO_FIX=$(jq -r '.canAutoFix // false' diagnosis.json)
+          ROOT_CAUSE=$(jq -r '.rootCause // "Unknown"' diagnosis.json)
+          FIX_DESCRIPTION=$(jq -r '.fixDescription // "Manual investigation required"' diagnosis.json)
+          
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "can_auto_fix=$CAN_AUTO_FIX" >> $GITHUB_OUTPUT
+          echo "root_cause=$ROOT_CAUSE" >> $GITHUB_OUTPUT
+          
+          # Determine action
+          if [ "$CAN_AUTO_FIX" = "true" ] && [ "$SEVERITY" != "critical" ]; then
+            echo "action=auto-fix" >> $GITHUB_OUTPUT
+          elif [ "$SEVERITY" = "critical" ]; then
+            echo "action=escalate-immediate" >> $GITHUB_OUTPUT
+          else
+            echo "action=create-issue" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create issue for manual fixes
+        if: steps.action.outputs.action == 'create-issue' || steps.action.outputs.action == 'escalate-immediate'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let diagnosis = {};
+            try {
+              diagnosis = JSON.parse(fs.readFileSync('diagnosis.json', 'utf8'));
+            } catch (e) {
+              diagnosis = { severity: 'medium', rootCause: 'Unknown', analysis: 'Could not parse diagnosis' };
+            }
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Incident: ${(diagnosis.rootCause || 'Unknown').substring(0, 50)}`,
+              body: `## Incident Report
+
+**ID**: ${{ steps.incident.outputs.incident_id }}
+**Severity**: ${diagnosis.severity || 'medium'}
+**Detected**: ${{ steps.incident.outputs.timestamp }}
+
+### Error
+\`\`\`
+${{ steps.incident.outputs.error }}
+\`\`\`
+
+### Diagnosis
+
+**Root Cause**: ${diagnosis.rootCause || 'Unknown'}
+
+**Analysis**:
+${diagnosis.analysis || 'Unable to determine'}
+
+### Recommended Fix
+
+${diagnosis.fixDescription || 'Manual investigation required'}
+
+### Affected Files
+${diagnosis.affectedFiles?.join('\n- ') || 'Unknown'}
+
+---
+*Generated by Incident Responder*`,
+              labels: ['incident', diagnosis.severity || 'medium', 'needs-investigation']
+            });
+
+      - name: Send escalation notification
+        if: steps.action.outputs.action == 'escalate-immediate' || steps.action.outputs.severity == 'critical'
+        run: |
+          if [ -n "${{ env.RESEND_API_KEY }}" ] && [ -n "${{ env.ALERT_EMAIL }}" ]; then
+            node .github/agents/scripts/send-notification.js
+          else
+            echo "⚠️ Email notification skipped - RESEND_API_KEY or ALERT_EMAIL not configured"
+          fi
+        env:
+          NOTIFICATION_TYPE: incident-escalation
+          INCIDENT_ID: ${{ steps.incident.outputs.incident_id }}
+          SEVERITY: ${{ steps.action.outputs.severity }}
+          ERROR: ${{ steps.incident.outputs.error }}
+          ROOT_CAUSE: ${{ steps.action.outputs.root_cause }}
+          DIAGNOSIS_FILE: diagnosis.json
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RECIPIENT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+
+      - name: Log incident to history
+        run: |
+          mkdir -p .github/agents/knowledge
+          echo "${{ steps.incident.outputs.incident_id }},${{ steps.incident.outputs.timestamp }},${{ steps.action.outputs.severity }},${{ steps.action.outputs.action }}" >> .github/agents/knowledge/incident-history.csv
+          
+          git config user.name "Incident Responder"
+          git config user.email "incident@agents.local"
+          git add .github/agents/knowledge/incident-history.csv
+          git diff --staged --quiet || git commit -m "📊 Log incident ${{ steps.incident.outputs.incident_id }} [skip ci]"
+          git push || true

@@ -1,0 +1,63 @@
+name: Architecture Guardian
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Analyze imports and dependencies
+        run: |
+          # Build import graph
+          echo "# Import Analysis" > import-analysis.txt
+          
+          # Find potential layer violations
+          echo "## Potential Layer Violations" >> import-analysis.txt
+          
+          # Components importing from API directly
+          grep -rn "from.*api\|from.*server" --include="*.tsx" --include="*.jsx" src/components 2>/dev/null >> import-analysis.txt || true
+          
+          # API routes importing from components
+          grep -rn "from.*components" --include="*.ts" --include="*.js" src/api 2>/dev/null >> import-analysis.txt || true
+          
+          # Find circular dependencies (simplified check)
+          echo "## Import Patterns" >> import-analysis.txt
+          grep -rh "^import " --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" . 2>/dev/null | \
+            grep -v node_modules | \
+            sed 's/.*from ["\x27]\([^"\x27]*\)["\x27].*/\1/' | \
+            sort | uniq -c | sort -rn | head -30 >> import-analysis.txt
+
+      - name: Get changed patterns
+        if: github.event_name == 'pull_request'
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > diff.txt
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt
+
+      - name: Run Architecture Analysis
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/agents/prompts/architecture-guardian.md
+          context_files: |
+            import-analysis.txt
+            .github/agents/knowledge/codebase-map.json
+            ${{ github.event_name == 'pull_request' && 'diff.txt' || '' }}
+          output_mode: ${{ github.event_name == 'pull_request' && 'pr_comment' || 'issue' }}
+          comment_header: "## 🏗️ Architecture Review"
+          issue_title: "🏗️ Architecture Report - $(date +%Y-%m-%d)"
+          issue_labels: architecture,automated

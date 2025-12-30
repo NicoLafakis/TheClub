@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; }
+    .header { background: #dc2626; color: white; padding: 24px; border-radius: 8px 8px 0 0; text-align: center; }
+    .header h1 { margin: 0; font-size: 24px; }
+    .header .subtitle { opacity: 0.9; font-size: 14px; margin-top: 8px; }
+    .content { background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
+    .alert-box { background: #fef2f2; border: 2px solid #fecaca; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+    .alert-box h2 { margin: 0 0 12px 0; color: #dc2626; font-size: 16px; }
+    .section { margin: 20px 0; padding: 16px; background: white; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .section h3 { margin: 0 0 12px 0; color: #374151; font-size: 14px; text-transform: uppercase; }
+    .action-button { display: block; background: #dc2626; color: white; padding: 16px 24px; border-radius: 8px; text-decoration: none; text-align: center; font-weight: 600; font-size: 16px; margin-top: 20px; }
+    .action-button:hover { background: #b91c1c; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .info-item { padding: 12px; background: #f3f4f6; border-radius: 6px; }
+    .info-item .label { font-size: 11px; color: #6b7280; text-transform: uppercase; }
+    .info-item .value { font-weight: 600; color: #374151; margin-top: 4px; }
+    .error-box { background: #1f2937; color: #f9fafb; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 13px; overflow-x: auto; white-space: pre-wrap; }
+    ul { margin: 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🚨 ESCALATION REQUIRED</h1>
+    <div class="subtitle">Automated systems require human intervention</div>
+  </div>
+  
+  <div class="content">
+    <div class="alert-box">
+      <h2>⚠️ This incident requires immediate human attention</h2>
+      <p>The Incident Responder agent has determined that this issue cannot be automatically resolved and requires manual intervention.</p>
+    </div>
+    
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="label">Incident ID</div>
+        <div class="value">{{INCIDENT_ID}}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Severity</div>
+        <div class="value">{{SEVERITY_EMOJI}} {{SEVERITY_UPPER}}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Detected</div>
+        <div class="value">{{TIMESTAMP}}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Source</div>
+        <div class="value">{{SOURCE}}</div>
+      </div>
+    </div>
+    
+    <div class="section">
+      <h3>Error Details</h3>
+      <div class="error-box">{{ERROR}}</div>
+    </div>
+    
+    <div class="section">
+      <h3>Why Escalation is Required</h3>
+      <p>{{ESCALATION_REASON}}</p>
+    </div>
+    
+    <div class="section">
+      <h3>Preliminary Analysis</h3>
+      <p><strong>Suspected Root Cause:</strong> {{ROOT_CAUSE}}</p>
+      {{ANALYSIS}}
+    </div>
+    
+    <div class="section">
+      <h3>Recommended Immediate Actions</h3>
+      <ul>
+        {{IMMEDIATE_ACTIONS}}
+      </ul>
+    </div>
+    
+    <a href="{{ACTIONS_URL}}" class="action-button">
+      🔍 View Full Incident Details in GitHub
+    </a>
+  </div>
+  
+  <div class="footer">
+    <p>This is an automated message from the Incident Responder agent.</p>
+    <p>Reply to this email or visit the GitHub issue to coordinate response.</p>
+  </div>
+</body>
+</html>

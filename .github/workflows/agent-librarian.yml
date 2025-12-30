@@ -1,0 +1,106 @@
+name: Codebase Librarian
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Nightly at midnight UTC
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [librarian-refresh]
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install -g typescript ts-node
+          cd .github/agents/scripts && npm install
+
+      - name: Gather codebase metrics
+        id: metrics
+        run: |
+          # Count files by type
+          echo "ts_files=$(find . -name '*.ts' -not -path './node_modules/*' | wc -l)" >> $GITHUB_OUTPUT
+          echo "js_files=$(find . -name '*.js' -not -path './node_modules/*' | wc -l)" >> $GITHUB_OUTPUT
+          echo "py_files=$(find . -name '*.py' -not -path './venv/*' | wc -l)" >> $GITHUB_OUTPUT
+          
+          # Get directory structure
+          find . -type d -not -path './node_modules/*' -not -path './.git/*' -not -path './dist/*' | head -100 > dirs.txt
+          
+          # Get all exports
+          grep -rh "^export " --include="*.ts" --include="*.js" . 2>/dev/null | head -500 > exports.txt
+          
+          # Get all imports  
+          grep -rh "^import " --include="*.ts" --include="*.js" . 2>/dev/null | head -1000 > imports.txt
+          
+          # Get file change frequency (last 90 days)
+          git log --since="90 days ago" --name-only --pretty=format: | sort | uniq -c | sort -rn | head -100 > hot-files.txt
+          
+          # Get contributors per file area
+          for dir in src lib app components; do
+            if [ -d "$dir" ]; then
+              echo "=== $dir ===" >> ownership.txt
+              git shortlog -sn --since="180 days ago" -- "$dir" | head -5 >> ownership.txt
+            fi
+          done
+
+      - name: Build codebase map
+        run: |
+          cat > codebase-context.txt << 'EOF'
+          # Codebase Analysis Context
+          
+          ## File Counts
+          TypeScript: ${{ steps.metrics.outputs.ts_files }}
+          JavaScript: ${{ steps.metrics.outputs.js_files }}
+          Python: ${{ steps.metrics.outputs.py_files }}
+          
+          ## Directory Structure
+          $(cat dirs.txt)
+          
+          ## Exports (sample)
+          $(head -100 exports.txt)
+          
+          ## Import Patterns (sample)
+          $(head -200 imports.txt)
+          
+          ## Hot Files (most changed recently)
+          $(cat hot-files.txt)
+          
+          ## Ownership
+          $(cat ownership.txt 2>/dev/null || echo "No ownership data")
+          EOF
+
+      - name: Run Librarian Analysis
+        id: analysis
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/agents/prompts/librarian.md
+          context_files: codebase-context.txt package.json tsconfig.json
+          output_format: json
+          output_file: .github/agents/knowledge/codebase-map.json
+
+      - name: Commit knowledge update
+        run: |
+          git config user.name "Codebase Librarian"
+          git config user.email "librarian@agents.local"
+          git add .github/agents/knowledge/
+          git diff --staged --quiet || git commit -m "📚 Librarian: Update codebase knowledge [skip ci]"
+          git push

@@ -1,0 +1,16 @@
+{
+  "name": "agent-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for TheClub agent ecosystem",
+  "type": "module",
+  "scripts": {
+    "notify": "node send-notification.js"
+  },
+  "dependencies": {
+    "resend": "^2.0.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

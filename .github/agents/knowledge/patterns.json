@@ -1,0 +1,10 @@
+{
+  "lastUpdated": null,
+  "patterns": [],
+  "antiPatterns": [],
+  "conventions": {
+    "naming": {},
+    "fileStructure": {},
+    "imports": {}
+  }
+}

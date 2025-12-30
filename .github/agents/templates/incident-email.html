@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; }
+    .header { background: {{SEVERITY_COLOR}}; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+    .header h1 { margin: 0 0 8px 0; font-size: 20px; }
+    .header .meta { opacity: 0.9; font-size: 14px; }
+    .content { background: #f9fafb; padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
+    .section { margin: 16px 0; padding: 16px; background: white; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .section h3 { margin: 0 0 12px 0; color: #374151; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .error-box { background: #fef2f2; border: 1px solid #fecaca; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 13px; overflow-x: auto; white-space: pre-wrap; }
+    .action-button { display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin-top: 16px; font-weight: 500; }
+    .action-button:hover { background: #1d4ed8; }
+    .severity-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+    .severity-critical { background: #fef2f2; color: #dc2626; }
+    .severity-high { background: #fffbeb; color: #d97706; }
+    .severity-medium { background: #fefce8; color: #ca8a04; }
+    .severity-low { background: #f0fdf4; color: #16a34a; }
+    ul, ol { margin: 0; padding-left: 20px; }
+    li { margin: 4px 0; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>{{SEVERITY_EMOJI}} Production Incident: {{INCIDENT_ID}}</h1>
+    <p class="meta">
+      <span class="severity-badge severity-{{SEVERITY}}">{{SEVERITY_UPPER}}</span>
+      &nbsp;|&nbsp; Detected: {{TIMESTAMP}}
+    </p>
+  </div>
+  
+  <div class="content">
+    <div class="section">
+      <h3>Error</h3>
+      <div class="error-box">{{ERROR}}</div>
+    </div>
+    
+    <div class="section">
+      <h3>Root Cause Analysis</h3>
+      <p><strong>{{ROOT_CAUSE}}</strong></p>
+      {{ANALYSIS}}
+    </div>
+    
+    {{#AFFECTED_FILES}}
+    <div class="section">
+      <h3>Affected Files</h3>
+      <ul>
+        {{AFFECTED_FILES_LIST}}
+      </ul>
+    </div>
+    {{/AFFECTED_FILES}}
+    
+    <div class="section">
+      <h3>Recommended Action</h3>
+      <p>{{FIX_DESCRIPTION}}</p>
+      {{#VERIFICATION_STEPS}}
+      <p><strong>Verification steps:</strong></p>
+      <ol>
+        {{VERIFICATION_STEPS_LIST}}
+      </ol>
+      {{/VERIFICATION_STEPS}}
+    </div>
+    
+    {{#PREVENTION}}
+    <div class="section">
+      <h3>Prevention Recommendations</h3>
+      <ul>
+        {{PREVENTION_LIST}}
+      </ul>
+    </div>
+    {{/PREVENTION}}
+    
+    <a href="{{ACTIONS_URL}}" class="action-button">
+      View in GitHub Actions
+    </a>
+  </div>
+</body>
+</html>

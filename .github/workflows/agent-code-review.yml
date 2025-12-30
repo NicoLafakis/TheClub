@@ -1,0 +1,61 @@
+name: Code Review Agent
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Don't run on PRs from agents
+    if: "!contains(github.event.pull_request.labels.*.name, 'agent-generated')"
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > pr-diff.txt
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed-files.txt
+          echo "file_count=$(wc -l < changed-files.txt)" >> $GITHUB_OUTPUT
+
+      - name: Load codebase knowledge
+        id: knowledge
+        run: |
+          if [ -f ".github/agents/knowledge/codebase-map.json" ]; then
+            echo "has_knowledge=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_knowledge=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get related code context
+        run: |
+          # For each changed file, get related files from the same directory
+          while read file; do
+            dir=$(dirname "$file")
+            find "$dir" -maxdepth 1 -name "*.ts" -o -name "*.js" -o -name "*.py" 2>/dev/null | head -5
+          done < changed-files.txt | sort -u > related-files.txt
+
+      - name: Run Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/agents/prompts/code-review.md
+          context_files: |
+            pr-diff.txt
+            changed-files.txt
+            .github/agents/knowledge/codebase-map.json
+          output_mode: pr_comment
+          comment_header: "## 👀 Code Review Agent"
+
+      - name: Update review timestamp
+        run: |
+          echo "${{ github.event.pull_request.number }}" >> .github/agents/knowledge/reviewed-prs.log

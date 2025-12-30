@@ -1,0 +1,31 @@
+{
+  "lastUpdated": null,
+  "summary": "Initial knowledge store - awaiting first Librarian scan",
+  "techStack": {
+    "primary": [],
+    "frameworks": [],
+    "infrastructure": []
+  },
+  "architecture": {
+    "type": "unknown",
+    "layers": [],
+    "entryPoints": []
+  },
+  "patterns": {
+    "errorHandling": "Not yet analyzed",
+    "stateManagement": "Not yet analyzed",
+    "dataFetching": "Not yet analyzed",
+    "testing": "Not yet analyzed",
+    "naming": "Not yet analyzed"
+  },
+  "ownership": {
+    "areas": []
+  },
+  "hotspots": {
+    "frequentlyChanged": [],
+    "complex": [],
+    "fragile": []
+  },
+  "conventions": [],
+  "warnings": []
+}

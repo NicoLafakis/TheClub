@@ -1,0 +1,226 @@
+# Repository Agent Ecosystem Configuration
+# ==========================================
+
+# Global Settings
+global:
+  # Timezone for scheduling (affects "working hours")
+  timezone: "America/New_York"
+  
+  # Working hours (agents are more active during these times)
+  working_hours:
+    start: 9   # 9 AM
+    end: 18    # 6 PM
+  
+  # Notification settings
+  notifications:
+    email_enabled: true
+    daily_digest: true
+    incident_alerts: true
+    
+  # Default labels for agent-created items
+  labels:
+    pr: ["agent-generated"]
+    issue: ["automated", "needs-review"]
+    incident: ["incident", "urgent"]
+
+# Agent-Specific Configuration
+agents:
+  librarian:
+    enabled: true
+    schedule: "0 0 * * *"  # Midnight UTC
+    
+    # What to track
+    track:
+      patterns: true
+      ownership: true
+      complexity: true
+      dependencies: true
+    
+    # Directories to exclude
+    exclude:
+      - node_modules
+      - dist
+      - build
+      - .git
+      - coverage
+
+  code-review:
+    enabled: true
+    
+    # Review settings
+    auto_approve: false  # Never auto-approve
+    comment_threshold: "medium"  # Only comment on medium+ severity
+    
+    # Skip these patterns
+    skip_patterns:
+      - "*.min.js"
+      - "*.generated.*"
+      - "*.lock"
+      - "dist/**"
+    
+    # Focus areas (prioritize these)
+    focus_areas:
+      - "src/api/**"
+      - "src/lib/**"
+      - "src/auth/**"
+
+  test-generation:
+    enabled: true
+    
+    # Auto-generate tests for
+    auto_generate_for:
+      - "src/utils/**"
+      - "src/lib/**"
+    
+    # Coverage thresholds
+    coverage:
+      target: 80
+      minimum: 60
+    
+    # Test framework (detected automatically if not set)
+    framework: null  # jest, mocha, pytest, etc.
+
+  security-audit:
+    enabled: true
+    
+    # Severity thresholds
+    fail_on: "critical"  # Fail PR check on this severity
+    comment_on: "medium"  # Comment on this severity and above
+    
+    # Secret patterns to detect
+    secret_patterns:
+      - "api[_-]?key"
+      - "secret"
+      - "password"
+      - "token"
+      - "credential"
+    
+    # Files to always scan
+    always_scan:
+      - "*.env*"
+      - "*config*"
+      - "*secret*"
+
+  pr-prep:
+    enabled: true
+    
+    # Auto-label based on paths
+    path_labels:
+      "src/components/**": "frontend"
+      "src/api/**": "backend"
+      "*.test.*": "tests"
+      "*.md": "documentation"
+    
+    # Size thresholds for labels
+    size_labels:
+      small: 50   # < 50 lines
+      medium: 200 # 50-200 lines
+      large: 500  # 200-500 lines
+      # > 500 lines = "size/xl"
+
+  architecture-guardian:
+    enabled: true
+    schedule: "0 2 * * *"  # 2 AM UTC
+    
+    # Architecture rules
+    rules:
+      # Layer dependencies (what can import what)
+      layers:
+        ui: ["services", "utils", "types"]
+        services: ["utils", "types", "api"]
+        api: ["services", "utils", "types", "db"]
+        db: ["utils", "types"]
+      
+      # Forbidden imports
+      forbidden:
+        - from: "components"
+          to: "api"
+        - from: "api"
+          to: "components"
+    
+    # Complexity thresholds
+    complexity:
+      max_file_lines: 500
+      max_function_lines: 50
+      max_cyclomatic: 10
+
+  release-captain:
+    enabled: true
+    schedule: "0 8 * * *"  # 8 AM UTC
+    
+    # Version bump rules
+    version:
+      # Keywords in commits that trigger specific bumps
+      major_keywords: ["BREAKING", "!:"]
+      minor_keywords: ["feat"]
+      patch_keywords: ["fix", "patch", "bugfix"]
+    
+    # Changelog settings
+    changelog:
+      file: "CHANGELOG.md"
+      format: "keepachangelog"  # or "conventional"
+    
+    # Auto-release settings
+    auto_release:
+      enabled: false  # Require manual merge of release PR
+      branches: ["main"]
+
+  incident-responder:
+    enabled: true
+    
+    # Health check settings
+    health_check:
+      enabled: true
+      interval: "*/5 * * * *"  # Every 5 minutes
+      endpoint: "/health"
+      timeout: 30
+    
+    # Severity escalation
+    escalation:
+      critical: "immediate"  # Email immediately
+      high: "15m"           # Wait 15 min before escalating
+      medium: "1h"          # Wait 1 hour
+      low: "never"          # Don't escalate, just create issue
+    
+    # Auto-fix settings
+    auto_fix:
+      enabled: true
+      max_severity: "medium"  # Don't auto-fix high/critical
+      require_tests: true     # Only auto-fix if tests pass
+
+# Railway Integration
+railway:
+  enabled: true
+  project_id: "${RAILWAY_PROJECT_ID}"
+  
+  # What to monitor
+  monitor:
+    logs: true
+    metrics: true
+    deployments: true
+  
+  # Error patterns to watch for
+  error_patterns:
+    - "Error:"
+    - "Exception:"
+    - "FATAL"
+    - "panic:"
+    - "Uncaught"
+
+# Notification Settings
+notifications:
+  resend:
+    enabled: true
+    from: "agents@yourdomain.com"
+  
+  recipients:
+    incidents: "${ALERT_EMAIL}"
+    daily_digest: "${TEAM_EMAIL}"
+    security: "${SECURITY_EMAIL}"
+  
+  # Quiet hours (no non-critical notifications)
+  quiet_hours:
+    enabled: true
+    start: 22  # 10 PM
+    end: 7     # 7 AM
+    exceptions: ["critical", "security"]
