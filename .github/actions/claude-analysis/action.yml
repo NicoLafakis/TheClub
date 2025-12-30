@@ -1,0 +1,253 @@
+name: 'Claude Analysis'
+description: 'Run Claude AI analysis on code and content'
+author: 'TheClub'
+
+inputs:
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: true
+  prompt:
+    description: 'Direct prompt text to send to Claude'
+    required: false
+  prompt_file:
+    description: 'Path to file containing the prompt'
+    required: false
+  context_files:
+    description: 'Newline-separated list of files to include as context'
+    required: false
+  additional_context:
+    description: 'Additional context to append to the prompt'
+    required: false
+  output_file:
+    description: 'File to write the response to'
+    required: false
+  output_mode:
+    description: 'Output mode: file, pr_comment, issue, stdout'
+    required: false
+    default: 'stdout'
+  model:
+    description: 'Claude model to use'
+    required: false
+    default: 'claude-sonnet-4-20250514'
+  max_tokens:
+    description: 'Maximum tokens in response'
+    required: false
+    default: '4096'
+  github_token:
+    description: 'GitHub token for PR comments/issues'
+    required: false
+  comment_header:
+    description: 'Header for PR comments'
+    required: false
+  issue_title:
+    description: 'Title for created issues'
+    required: false
+  issue_labels:
+    description: 'Comma-separated labels for created issues'
+    required: false
+
+outputs:
+  response:
+    description: 'The response from Claude'
+    value: ${{ steps.claude.outputs.response }}
+  output_file:
+    description: 'Path to the output file if created'
+    value: ${{ steps.claude.outputs.output_file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run Claude Analysis
+      id: claude
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_PROMPT_FILE: ${{ inputs.prompt_file }}
+        INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
+        INPUT_ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
+        INPUT_OUTPUT_FILE: ${{ inputs.output_file }}
+        INPUT_OUTPUT_MODE: ${{ inputs.output_mode }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_TOKENS: ${{ inputs.max_tokens }}
+        INPUT_COMMENT_HEADER: ${{ inputs.comment_header }}
+        INPUT_ISSUE_TITLE: ${{ inputs.issue_title }}
+        INPUT_ISSUE_LABELS: ${{ inputs.issue_labels }}
+      run: |
+        # Build the prompt
+        FULL_PROMPT=""
+
+        # Add prompt from file if specified
+        if [ -n "$INPUT_PROMPT_FILE" ] && [ -f "$INPUT_PROMPT_FILE" ]; then
+          FULL_PROMPT="$(cat "$INPUT_PROMPT_FILE")"
+          echo "Loaded prompt from $INPUT_PROMPT_FILE"
+        fi
+
+        # Add direct prompt if specified
+        if [ -n "$INPUT_PROMPT" ]; then
+          FULL_PROMPT="${FULL_PROMPT}
+
+        ${INPUT_PROMPT}"
+        fi
+
+        # Add context files
+        if [ -n "$INPUT_CONTEXT_FILES" ]; then
+          FULL_PROMPT="${FULL_PROMPT}
+
+        ## Context Files
+        "
+          echo "$INPUT_CONTEXT_FILES" | while IFS= read -r file; do
+            file=$(echo "$file" | xargs)  # trim whitespace
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              FULL_PROMPT="${FULL_PROMPT}
+
+        ### File: $file
+        \`\`\`
+        $(cat "$file" 2>/dev/null | head -1000)
+        \`\`\`
+        "
+              echo "Added context from $file"
+            fi
+          done
+        fi
+
+        # Add additional context
+        if [ -n "$INPUT_ADDITIONAL_CONTEXT" ]; then
+          FULL_PROMPT="${FULL_PROMPT}
+
+        ## Additional Context
+        ${INPUT_ADDITIONAL_CONTEXT}"
+        fi
+
+        # Save prompt for the API call
+        echo "$FULL_PROMPT" > /tmp/claude_prompt.txt
+
+        # Create the API request payload
+        cat > /tmp/claude_request.json << 'JSONEOF'
+        {
+          "model": "INPUT_MODEL_PLACEHOLDER",
+          "max_tokens": INPUT_MAX_TOKENS_PLACEHOLDER,
+          "messages": [
+            {
+              "role": "user",
+              "content": "PROMPT_PLACEHOLDER"
+            }
+          ]
+        }
+        JSONEOF
+
+        # Use node to properly escape and build JSON
+        node << 'NODEEOF'
+        const fs = require('fs');
+
+        const prompt = fs.readFileSync('/tmp/claude_prompt.txt', 'utf8');
+        const model = process.env.INPUT_MODEL || 'claude-sonnet-4-20250514';
+        const maxTokens = parseInt(process.env.INPUT_MAX_TOKENS) || 4096;
+
+        const payload = {
+          model: model,
+          max_tokens: maxTokens,
+          messages: [
+            {
+              role: "user",
+              content: prompt
+            }
+          ]
+        };
+
+        fs.writeFileSync('/tmp/claude_request.json', JSON.stringify(payload));
+        console.log('Request payload created');
+        NODEEOF
+
+        # Call Claude API
+        echo "Calling Claude API..."
+        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST https://api.anthropic.com/v1/messages \
+          -H "Content-Type: application/json" \
+          -H "x-api-key: $ANTHROPIC_API_KEY" \
+          -H "anthropic-version: 2023-06-01" \
+          -d @/tmp/claude_request.json)
+
+        HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
+        RESPONSE_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "Error: API returned HTTP $HTTP_CODE"
+          echo "$RESPONSE_BODY"
+          exit 1
+        fi
+
+        # Extract the text response
+        CLAUDE_RESPONSE=$(echo "$RESPONSE_BODY" | node -e "
+          const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+          console.log(data.content[0].text);
+        ")
+
+        echo "Claude response received"
+
+        # Handle output based on mode
+        case "$INPUT_OUTPUT_MODE" in
+          file)
+            if [ -n "$INPUT_OUTPUT_FILE" ]; then
+              echo "$CLAUDE_RESPONSE" > "$INPUT_OUTPUT_FILE"
+              echo "Response written to $INPUT_OUTPUT_FILE"
+              echo "output_file=$INPUT_OUTPUT_FILE" >> $GITHUB_OUTPUT
+            fi
+            ;;
+          pr_comment)
+            if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_EVENT_PATH" ]; then
+              PR_NUMBER=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
+              if [ -n "$PR_NUMBER" ]; then
+                COMMENT_BODY="${INPUT_COMMENT_HEADER}
+
+        ${CLAUDE_RESPONSE}"
+                # Escape for JSON
+                ESCAPED_BODY=$(echo "$COMMENT_BODY" | node -e "console.log(JSON.stringify(require('fs').readFileSync(0,'utf8')))")
+
+                curl -s -X POST \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                  -d "{\"body\": $ESCAPED_BODY}"
+                echo "Comment posted to PR #$PR_NUMBER"
+              fi
+            fi
+            ;;
+          issue)
+            if [ -n "$GITHUB_TOKEN" ]; then
+              LABELS_JSON="[]"
+              if [ -n "$INPUT_ISSUE_LABELS" ]; then
+                LABELS_JSON=$(echo "$INPUT_ISSUE_LABELS" | node -e "
+                  const labels = require('fs').readFileSync(0,'utf8').split(',').map(l => l.trim()).filter(l => l);
+                  console.log(JSON.stringify(labels));
+                ")
+              fi
+
+              ESCAPED_BODY=$(echo "$CLAUDE_RESPONSE" | node -e "console.log(JSON.stringify(require('fs').readFileSync(0,'utf8')))")
+              ESCAPED_TITLE=$(echo "${INPUT_ISSUE_TITLE:-Claude Analysis}" | node -e "console.log(JSON.stringify(require('fs').readFileSync(0,'utf8').trim()))")
+
+              curl -s -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
+                -d "{\"title\": $ESCAPED_TITLE, \"body\": $ESCAPED_BODY, \"labels\": $LABELS_JSON}"
+              echo "Issue created"
+            fi
+            ;;
+          stdout|*)
+            echo "$CLAUDE_RESPONSE"
+            ;;
+        esac
+
+        # Set output (truncate if too long for GitHub Actions)
+        TRUNCATED_RESPONSE=$(echo "$CLAUDE_RESPONSE" | head -c 50000)
+        EOF_MARKER=$(openssl rand -hex 8)
+        echo "response<<$EOF_MARKER" >> $GITHUB_OUTPUT
+        echo "$TRUNCATED_RESPONSE" >> $GITHUB_OUTPUT
+        echo "$EOF_MARKER" >> $GITHUB_OUTPUT

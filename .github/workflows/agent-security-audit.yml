@@ -9,6 +9,10 @@ on:
     - cron: '0 1 * * *'  # Daily at 1am UTC
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -35,9 +39,9 @@ jobs:
         id: npm-audit
         if: hashFiles('package.json') != ''
         run: |
-          npm audit --json > npm-audit.json 2>/dev/null || true
-          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
-          HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
+          npm audit --json > npm-audit.json 2>/dev/null || echo '{"metadata":{"vulnerabilities":{"critical":0,"high":0}}}' > npm-audit.json
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json 2>/dev/null || echo "0")
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json 2>/dev/null || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           echo "high=$HIGH" >> $GITHUB_OUTPUT
         continue-on-error: true
@@ -47,32 +51,63 @@ jobs:
         run: |
           # Patterns that indicate security-sensitive code
           PATTERNS="auth|login|password|token|secret|api[_-]?key|credential|session|cookie|jwt|oauth|encrypt|decrypt|hash|permission|role|admin"
-          
+
+          SECURITY_FILES=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -iE "$PATTERNS" | tr '\n' ' ')
+            git fetch origin ${{ github.base_ref }} 2>/dev/null || true
+            SECURITY_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null | grep -iE "$PATTERNS" | head -30 | tr '\n' ' ' || true)
           else
-            FILES=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) \
-              -not -path "./node_modules/*" | xargs grep -l -iE "$PATTERNS" 2>/dev/null | head -30 | tr '\n' ' ')
+            SECURITY_FILES=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) \
+              -not -path "./node_modules/*" 2>/dev/null | xargs grep -l -iE "$PATTERNS" 2>/dev/null | head -30 | tr '\n' ' ' || true)
           fi
-          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+          # Write files to a list for context
+          echo "$SECURITY_FILES" | tr ' ' '\n' | grep -v '^$' > security-files.txt || true
+          echo "Collected $(wc -l < security-files.txt | tr -d ' ') security-relevant files"
+
+      - name: Prepare security context
+        run: |
+          # Create a summary file for security context
+          {
+            echo "# Security Audit Context"
+            echo ""
+            echo "## Gitleaks Result"
+            echo "Status: ${{ steps.gitleaks.outcome }}"
+            echo ""
+            echo "## NPM Audit Summary"
+            if [ -f "npm-audit.json" ]; then
+              echo "Critical: ${{ steps.npm-audit.outputs.critical || '0' }}"
+              echo "High: ${{ steps.npm-audit.outputs.high || '0' }}"
+            else
+              echo "No npm audit data available"
+            fi
+            echo ""
+            echo "## Security-Relevant Files"
+            cat security-files.txt 2>/dev/null || echo "No security-relevant files identified"
+          } > security-context.txt
 
       - name: Run Security Analysis
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/claude-analysis
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt_file: .github/agents/prompts/security-audit.md
           context_files: |
+            security-context.txt
             npm-audit.json
-            ${{ steps.files.outputs.files }}
             .github/agents/knowledge/codebase-map.json
+          additional_context: |
+            Gitleaks result: ${{ steps.gitleaks.outcome }}
+            Critical vulnerabilities: ${{ steps.npm-audit.outputs.critical || '0' }}
+            High vulnerabilities: ${{ steps.npm-audit.outputs.high || '0' }}
           output_mode: ${{ github.event_name == 'pull_request' && 'pr_comment' || 'issue' }}
           comment_header: "## 🔒 Security Audit"
           issue_title: "🔒 Security Audit - ${{ github.sha }}"
           issue_labels: security,automated
 
       - name: Alert on critical findings
-        if: steps.npm-audit.outputs.critical > 0 || steps.gitleaks.outcome == 'failure'
+        if: steps.npm-audit.outputs.critical != '0' || steps.gitleaks.outcome == 'failure'
         run: |
           echo "🚨 Critical security issue detected!"
           echo "GitLeaks: ${{ steps.gitleaks.outcome }}"
-          echo "Critical vulnerabilities: ${{ steps.npm-audit.outputs.critical }}"
+          echo "Critical vulnerabilities: ${{ steps.npm-audit.outputs.critical || '0' }}"
